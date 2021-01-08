@@ -81,8 +81,10 @@ class C:
     ''' Class to contain the recursion relations for the vector outer-products.
     '''
 
-    def __init__(self, nmo, force_orth=True, dtype=np.float64):
+    def __init__(self, nmo, force_orth=True, dtype=np.float64, cache=True):
         self._c = {}
+        self._cb_cache = {} if cache else None
+        self._mc_cache = {} if cache else None
         self.zero = np.zeros((nmo, nmo), dtype=dtype)
         self.eye = np.eye(nmo, dtype=dtype)
         self.force_orth = force_orth
@@ -121,6 +123,24 @@ class C:
                 print('\nSanity check failed for C^{%d}_{%d,%d}' % (n,i,j))
                 raise e
 
+    def cb(c, i, n, j, env):
+        # Get a cached term c[i,n,j] . b[j].T
+        b = env['b']
+        if c._cb_cache is None:
+            return np.dot(c[i,n,j], b[j].T.conj())
+        if (i,n,j) not in c._cb_cache:
+            c._cb_cache[i,n,j] = np.dot(c[i,n,j], b[j].T.conj())
+        return c._cb_cache[i,n,j]
+
+    def mc(c, i, n, j, env):
+        # Get a cached term c[i,1,i] . c[i,n,j]
+        m = env['b']
+        if c._mc_cache is None:
+            return np.dot(c[i,1,i], c[i,n,j])
+        if (i,n,j) not in c._mc_cache:
+            c._mc_cache[i,n,j] = np.dot(c[i,1,i], c[i,n,j])
+        return c._mc_cache[i,n,j]
+
     def build_11(c, n, env):
         t, binv = env['t'], env['binv']
         c[1,n,1] = np.dot(np.dot(binv.T.conj(), t[n]), binv)
@@ -136,8 +156,8 @@ class C:
                 c[i+1,n,j] = c.eye.copy()
             return c
         tmp  = c[i,n+1,j].copy()
-        tmp -= np.dot(b[i-1], c[i-1,n,j])
-        tmp -= np.dot(c[i,1,i], c[i,n,j])
+        tmp -= c.cb(j,n,i-1, env).T.conj()
+        tmp -= c.mc(i,n,j, env)
         c[i+1,n,j] = np.dot(binv.T.conj(), tmp)
         return c
 
@@ -148,11 +168,11 @@ class C:
             c[i+1,n,i+1] = c.eye.copy()
             return c
         tmp  = c[i,n+2,i].copy()
-        tmp -= lib.hermi_sum(np.dot(c[i,n+1,i-1], b[i-1].T.conj()))
-        tmp -= lib.hermi_sum(np.dot(c[i,n+1,i], c[i,1,i].T.conj()))
-        tmp += lib.hermi_sum(np.dot(np.dot(c[i,1,i], c[i,n,i-1]), b[i-1].T.conj()))
-        tmp += np.dot(np.dot(b[i-1], c[i-1,n,i-1]), b[i-1].T.conj())
-        tmp += np.dot(np.dot(c[i,1,i], c[i,n,i]), c[i,1,i].T.conj())
+        tmp -= lib.hermi_sum(c.cb(i,n+1,i-1, env))
+        tmp -= lib.hermi_sum(c.mc(i,n+1,i, env).T.conj())
+        tmp += lib.hermi_sum(np.dot(c[i,1,i], c.cb(i,n,i-1, env)))
+        tmp += np.dot(b[i-1], c.cb(i-1,n,i-1, env))
+        tmp += np.dot(c.mc(i,n,i, env), c[i,1,i].T.conj())
         c[i+1,n,i+1] = np.dot(np.dot(binv.T.conj(), tmp), binv)
         return c
 
@@ -163,7 +183,8 @@ def compute_b(i, env, cond_tol=10, maxiter=20, method='eig'):
         b2 = t[0]
     else:
         b2  = c[i,2,i].copy()
-        b2 -= lib.hermi_sum(np.dot(c[i,1,i-1], b[i-1].T.conj()))
+        #b2 -= lib.hermi_sum(np.dot(c[i,1,i-1], b[i-1].T.conj()))
+        b2 -= lib.hermi_sum(c.cb(i,1,i-1, env))
         b2 -= np.dot(c[i,1,i], c[i,1,i].T.conj())
         if i > 1:
             b2 += np.dot(b[i-1], b[i-1].T.conj())
