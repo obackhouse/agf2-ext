@@ -9,7 +9,7 @@ import time
 from pyscf.lib import logger
 from pyscf import lib, agf2
 from pyscf.agf2 import mpi_helper
-from agf2_ext import block_lanczos
+from agf2_ext import block_lanczos, _agf2
 
 
 def distr_iter(it):
@@ -36,11 +36,11 @@ def build_se_part(gf2, eri, gf_occ, gf_vir, nmom, os_factor=1.0, ss_factor=1.0):
         mask = agf2.ragf2.get_frozen_mask(agf2)
         nmo -= np.sum(~mask)
 
-    t = np.zeros((2*nmom+2, nmo, nmo))
-
     ei, ci = gf_occ.energy, gf_occ.coupling
     ea, ca = gf_vir.energy, gf_vir.coupling
     qxi, qja = agf2.dfragf2._make_qmo_eris_incore(gf2, eri, (ci, ci, ca))
+
+    t = np.zeros((2*nmom+2, nmo, nmo))
 
     eija = lib.direct_sum('i,j,a->ija', ei, ei, -ea)
     naux = qxi.shape[0]
@@ -58,27 +58,10 @@ def build_se_part(gf2, eri, gf_occ, gf_vir, nmom, os_factor=1.0, ss_factor=1.0):
             t[n] = lib.dot(xija, xjia.T, beta=1, c=t[n])
             xjia *= eja[None]
 
-    #qxi = np.asfortranarray(qxi.reshape(naux, nmo, nocc))
-    #qja = qja.reshape(naux, nocc, nvir)
-    #buf = np.empty((4, nmo, nvir))
-    #for i, j in distr_iter(zip(*np.tril_indices(nocc))):
-    #    xija = lib.dot(qxi[:,:,i].T, qja[:,j], c=buf[0])
-    #    xjia = lib.dot(qxi[:,:,j].T, qja[:,i], c=buf[1])
-    #    v1 = buf[2][:] = 2.0 * xija - xjia
-    #    if i != j:
-    #        v2 = buf[3][:] = 2.0 * xjia - xija
-    #    eja = eija[i,j].ravel()
-
-    #    for n in range(2*nmom+2):
-    #        t[n] = lib.dot(xija, v1.T, beta=1, c=t[n])
-    #        v1 *= eja[None]
-
-    #        if i != j:
-    #            t[n] = lib.dot(xjia, v2.T, beta=1, c=t[n])
-    #            v2 *= eja[None]
-
     mpi_helper.barrier()
     mpi_helper.allreduce_safe_inplace(t)
+
+    #t = _agf2.dfragf2_slow_fast_build(qxi, qja, ei, ea, 2*nmom+2, os_factor=os_factor, ss_factor=ss_factor)
 
     if not np.all(np.isfinite(t)):
         raise ValueError('Overflow from large moments')
@@ -158,7 +141,7 @@ class DFRAGF2(agf2.dfragf2.DFRAGF2):
 if __name__ == '__main__':
     from pyscf import gto, scf, agf2
 
-    mol = gto.M(atom='O 0 0 0; O 0 0 1', basis='cc-pvtz', verbose=5)
+    mol = gto.M(atom='O 0 0 0; O 0 0 1', basis='cc-pvdz', verbose=5)
     #rhf = scf.RHF(mol).run()
     
     #gf2_a = agf2.AGF2(rhf, nmom=(2,3)).run()
